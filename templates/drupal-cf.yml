@@ -1,0 +1,630 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    # define parameter logical grouping
+    ParameterGroups:
+      # define the Drupal CMS endpoint, its unique session cookie name and
+      # whether its listening on HTTP or HTTPS
+      - Label:
+          default: Drupal Backend Configuration
+        Parameters:
+          - DrupalBackendEndpoint
+          - Encrypted
+          - DrupalCookieName
+      # define the domain name which will be used by anonymous users of
+      # your site and whether you want a different configuration for
+      # admin access
+      - Label:
+          default: Drupal Frontend Configuration
+        Parameters:
+          - DomainName
+          - AdminConfig
+          - AdminDomainName
+      - Label:
+          default: Route53 DNS Configuration
+        Parameters:
+          - HostedZoneId
+    ParameterLabels:
+      DrupalBackendEndpoint:
+        default: Drupal backend Endpoint
+      Encrypted:
+        default: Backend listening on https or http?
+      AdminConfig:
+        default: Enable Admin configuration
+      DrupalCookieName:
+        default: Drupal Cookie Name
+      DomainName:
+        default: Domain Name
+      HostedZoneId:
+        default: Hosted Zone Id
+      AdminDomainName:
+        default: Admin Domain Name
+
+Parameters:
+  DrupalBackendEndpoint:
+    Type: String
+    Description: Publicly available backend load balancer endpoint for yor Drupal CMS.
+  Encrypted:
+    Type: String
+    AllowedValues:
+      - https
+      - http
+    ConstraintDescription: Choose an option between https or http
+    Default: http
+  DrupalCookieName:
+    Type: String
+    Description: Unique session cookie name set by Drupal per CMS installation. It starts with prefix 'SESS' and can be obtained from browser developer console when you login as user.
+    Default: 'SESS'
+  AdminConfig:
+    Type: String
+    AllowedValues:
+      - true
+      - false
+    ConstraintDescription: Create a separate Admin domain config (recommended).
+    Default: yes
+    Description: Create a separate CloudFront configuration restricted to admin access only. If this is set to 'false' then 'DomainName' is used by anonymous and logged in users.
+  AdminDomainName:
+    Type: String
+    Description: (Optional) Fully qualified domain name used to modify content on Drupal CMS.
+  DomainName:
+    Type: String
+    Description: (Optional) Fully qualified domain name used by end-users to anonymously consume content.
+  HostedZoneId:
+    Type: String
+    Description: (Optional) Route53 Hosted zone ID where the domains will be created.
+
+Rules:
+  DrupalCookieNameRule:
+    Assertions:
+      - Assert: !Not
+          - !Equals
+            - Ref: DrupalCookieName
+            - ''
+        AssertDescription: Drupal's cookie name cannot be empty.
+  DrupalBackendEndpointRule:
+    Assertions:
+      - Assert: !Not
+          - !Equals
+            - Ref: DrupalBackendEndpoint
+            - ''
+        AssertDescription: Drupal Backend endpoint cannot be empty.
+  HostedZoneIdRule:
+    RuleCondition: !Not
+      - !Equals
+        - Ref: HostedZoneId
+        - ''
+    Assertions:
+      - Assert: !Or
+        - !Not
+          - !Equals
+            - Ref: AdminDomainName
+            - ''
+        - !Not
+          - !Equals
+            - !Ref DomainName
+            - ''
+        AssertDescription: Either or both 'DomainName' and 'AdminDomainName' must be set when 'HostedZoneId' is specified.
+  AdminDomainNameRule:
+    RuleCondition: !Not
+      - !Equals
+        - !Ref AdminDomainName
+        - ''
+    Assertions:
+      - Assert: !Not
+          - !Equals
+            - !Ref HostedZoneId
+            - ''
+        AssertDescription: Route53 'HostedZoneId' must be set when 'AdminDomainName' is specified.
+  DomainNameRule:
+    RuleCondition: !Not
+      - !Equals
+        - !Ref DomainName
+        - ''
+    Assertions:
+      - Assert: !Not
+          - !Equals
+            - !Ref HostedZoneId
+            - ''
+        AssertDescription: Route53 'HostedZoneId' must be set when 'DomainName' is specified.
+
+Conditions:
+  EnableHTTPS: !Equals
+    - !Ref Encrypted
+    - https
+  EnableAdminDistribution: !Equals
+    - !Ref AdminConfig
+    - true
+  EnableDomain: !Not
+    - !Equals
+      - !Ref DomainName
+      - ''
+  EnableAdminDomain: !Not
+    - !Equals
+      - !Ref AdminDomainName
+      - ''
+  DisableAdminDistribution:
+    !Not [Condition: EnableAdminDistribution]
+
+  #create Route53 record set only when both conditions are true
+  EnableRecordSet: !And
+    - !Condition EnableAdminDomain
+    - !Condition EnableAdminDistribution
+
+
+Resources:
+
+  DomainACMCertificate:
+      Type: AWS::CertificateManager::Certificate
+      Condition: EnableDomain
+      Properties:
+        DomainName: !Ref DomainName
+        DomainValidationOptions:
+              - DomainName: !Ref DomainName
+                HostedZoneId: !Ref HostedZoneId
+        ValidationMethod: DNS
+
+  AdminDomainACMCertificate:
+      Type: AWS::CertificateManager::Certificate
+      Condition: EnableAdminDomain
+      Properties:
+        DomainName: !Ref AdminDomainName
+        DomainValidationOptions:
+              - DomainName: !Ref AdminDomainName
+                HostedZoneId: !Ref HostedZoneId
+        ValidationMethod: DNS
+
+  DrupalAdminPathRegex:
+    Type: AWS::WAFv2::RegexPatternSet
+    Properties:
+      Name: !Sub "${AWS::StackName}-DrupalAdminRegex"
+      Description: Admin path patterns specific to Drupal.
+      RegularExpressionList:
+        - ^(\/user\/|\/admin\/)
+        - ^(\/node\/|\/batch|\/core\/)
+      Scope: CLOUDFRONT
+
+  AdminWAFWebACL:
+    Type: AWS::WAFv2::WebACL
+    Condition: EnableAdminDistribution
+    Properties:
+      DefaultAction:
+        Allow: {}
+      Description: WAF Web ACL for AdminDistribution
+      Name: !Sub '${AWS::StackName}-AdminWAFWebACL'
+      Rules:
+        - Name: 'allow-login-page'
+          Action:
+            Allow: {}
+          Priority: 0
+          Statement:
+            ByteMatchStatement:
+              FieldToMatch:
+                UriPath: {}
+              PositionalConstraint: STARTS_WITH
+              SearchString: /user/login
+              TextTransformations:
+                - Type: LOWERCASE
+                  Priority: 0
+          VisibilityConfig:
+            MetricName: 'allow-login-page'
+            CloudWatchMetricsEnabled: true
+            SampledRequestsEnabled: true
+        - Name: 'block-anonymous-admin-urls'
+          Action:
+            Block: {}
+          Priority: 2
+          Statement:
+            AndStatement:
+              Statements:
+              - NotStatement:
+                  Statement:
+                    ByteMatchStatement:
+                      FieldToMatch:
+                        SingleHeader:
+                          Name: cookie
+                      PositionalConstraint: CONTAINS
+                      SearchString: !Ref DrupalCookieName
+                      TextTransformations:
+                      - Type: NONE
+                        Priority: 0
+              - RegexPatternSetReferenceStatement:
+                  Arn: !GetAtt DrupalAdminPathRegex.Arn
+                  FieldToMatch:
+                    UriPath: {}
+                  TextTransformations:
+                    - Type: LOWERCASE
+                      Priority: 0
+          VisibilityConfig:
+            MetricName: 'block-admin-urls'
+            CloudWatchMetricsEnabled: true
+            SampledRequestsEnabled: true
+      Scope: CLOUDFRONT
+      VisibilityConfig:
+        MetricName: !Sub "${AWS::StackName}-AdminWAFWebACL"
+        CloudWatchMetricsEnabled: true
+        SampledRequestsEnabled: true
+
+  ViewerWAFWebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      DefaultAction:
+        Allow: {}
+      Description: WAF Web ACL for ViewerDistribution
+      Name: !Sub '${AWS::StackName}-ViewerWAFWebACL'
+      Rules: !If
+        - EnableAdminDistribution
+        -
+          - Name: 'block-anonymous-admin-urls'
+            Action:
+              Block: {}
+            Priority: 2
+            Statement:
+              RegexPatternSetReferenceStatement:
+                Arn: !GetAtt DrupalAdminPathRegex.Arn
+                FieldToMatch:
+                  UriPath: {}
+                TextTransformations:
+                  - Type: LOWERCASE
+                    Priority: 0
+            VisibilityConfig:
+              MetricName: 'block-anonymous-admin-urls'
+              CloudWatchMetricsEnabled: true
+              SampledRequestsEnabled: true
+        -
+          - Name: 'allow-login-page'
+            Action:
+              Allow: {}
+            Priority: 0
+            Statement:
+              ByteMatchStatement:
+                FieldToMatch:
+                  UriPath: {}
+                PositionalConstraint: STARTS_WITH
+                SearchString: /user/login
+                TextTransformations:
+                  - Type: LOWERCASE
+                    Priority: 0
+            VisibilityConfig:
+              MetricName: 'allow-login-page'
+              CloudWatchMetricsEnabled: true
+              SampledRequestsEnabled: true
+          - Name: 'block-anonymous-admin-urls'
+            Action:
+              Block: {}
+            Priority: 2
+            Statement:
+              AndStatement:
+                Statements:
+                - NotStatement:
+                    Statement:
+                      ByteMatchStatement:
+                        FieldToMatch:
+                          SingleHeader:
+                            Name: cookie
+                        PositionalConstraint: CONTAINS
+                        SearchString: !Ref DrupalCookieName
+                        TextTransformations:
+                          - Type: NONE
+                            Priority: 0
+                - RegexPatternSetReferenceStatement:
+                    Arn: !GetAtt DrupalAdminPathRegex.Arn
+                    FieldToMatch:
+                      UriPath: {}
+                    TextTransformations:
+                      - Type: LOWERCASE
+                        Priority: 0
+            VisibilityConfig:
+              MetricName: 'block-admin-urls'
+              CloudWatchMetricsEnabled: true
+              SampledRequestsEnabled: true
+      Scope: CLOUDFRONT
+      VisibilityConfig:
+        MetricName: !Sub "${AWS::StackName}-ViewerWAFWebACL"
+        CloudWatchMetricsEnabled: true
+        SampledRequestsEnabled: true
+
+  CachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Condition: DisableAdminDistribution
+    Properties:
+      CachePolicyConfig:
+        Name:
+          Fn::Sub: ${AWS::StackName}-CachePolicy
+        DefaultTTL: 86400
+        MaxTTL: 31536000
+        MinTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingBrotli: true
+          EnableAcceptEncodingGzip: true
+          HeadersConfig:
+            HeaderBehavior: none
+          CookiesConfig:
+            CookieBehavior: whitelist
+            Cookies:
+              - !Ref DrupalCookieName
+          QueryStringsConfig:
+            QueryStringBehavior: whitelist
+            QueryStrings:
+              - !Join ["-",[!Ref DrupalCookieName, 'randomstr']]
+
+
+  ViewerDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases: !If
+          - EnableDomain
+          - - !Ref DomainName
+          - - !Ref AWS::NoValue
+        HttpVersion: http2
+        Origins:
+        - DomainName: !Ref DrupalBackendEndpoint
+          Id: dynamicOrigin
+          CustomOriginConfig:
+            HTTPSPort: !If
+              - EnableHTTPS
+              - 443
+              - 80
+            OriginProtocolPolicy: !If
+              - EnableHTTPS
+              - https-only
+              - http-only
+        Enabled: 'true'
+        Comment: !Sub "${AWS::StackName} - viewer distribution for Drupal content delivery"
+        CacheBehaviors: !If
+          - EnableAdminDistribution
+          - !Ref AWS::NoValue
+          -
+            -
+              PathPattern: '/admin/*'
+              TargetOriginId: dynamicOrigin
+              AllowedMethods:
+                - GET
+                - HEAD
+                - OPTIONS
+                - PUT
+                - POST
+                - PATCH
+                - DELETE
+              CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad'
+              OriginRequestPolicyId: '216adef6-5c7f-47e4-b989-5492eafa07d3'
+              ViewerProtocolPolicy: redirect-to-https
+              Compress: 'false'
+            -
+              PathPattern: '/user/*'
+              TargetOriginId: dynamicOrigin
+              AllowedMethods:
+                - GET
+                - HEAD
+                - OPTIONS
+                - PUT
+                - POST
+                - PATCH
+                - DELETE
+              CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad'
+              OriginRequestPolicyId: '216adef6-5c7f-47e4-b989-5492eafa07d3'
+              ViewerProtocolPolicy: redirect-to-https
+              Compress: 'false'
+            -
+              PathPattern: '/core/*'
+              TargetOriginId: dynamicOrigin
+              AllowedMethods:
+                - GET
+                - HEAD
+                - OPTIONS
+                - PUT
+                - POST
+                - PATCH
+                - DELETE
+              CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad'
+              OriginRequestPolicyId: '216adef6-5c7f-47e4-b989-5492eafa07d3'
+              ViewerProtocolPolicy: redirect-to-https
+              Compress: 'false'
+            -
+              PathPattern: '/batch/*'
+              TargetOriginId: dynamicOrigin
+              AllowedMethods:
+                - GET
+                - HEAD
+                - OPTIONS
+                - PUT
+                - POST
+                - PATCH
+                - DELETE
+              CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad'
+              OriginRequestPolicyId: '216adef6-5c7f-47e4-b989-5492eafa07d3'
+              ViewerProtocolPolicy: redirect-to-https
+              Compress: 'false'
+            -
+              PathPattern: '/node/*'
+              TargetOriginId: dynamicOrigin
+              AllowedMethods:
+                - GET
+                - HEAD
+                - OPTIONS
+                - PUT
+                - POST
+                - PATCH
+                - DELETE
+              CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad'
+              OriginRequestPolicyId: '216adef6-5c7f-47e4-b989-5492eafa07d3'
+              ViewerProtocolPolicy: redirect-to-https
+              Compress: 'false'
+        DefaultCacheBehavior:
+          TargetOriginId: dynamicOrigin
+          CachePolicyId: !If
+            - EnableAdminDistribution
+            - '658327ea-f89d-4fab-a63d-7e88639e58f6'
+            - !Ref CachePolicy
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+              - GET
+              - HEAD
+          Compress: 'true'
+          FunctionAssociations: !If
+            - EnableAdminDistribution
+            - !Ref AWS::NoValue
+            -
+              - EventType: 'viewer-request'
+                FunctionARN: !GetAtt BypassCacheFunction.FunctionARN
+        PriceClass: PriceClass_All
+        ViewerCertificate: !If
+          - EnableDomain
+          - AcmCertificateArn: !Ref DomainACMCertificate
+            MinimumProtocolVersion: 'TLSv1.2_2021'
+            SslSupportMethod: 'sni-only'
+          - CloudFrontDefaultCertificate: true
+        WebACLId: !GetAtt ViewerWAFWebACL.Arn
+
+  AdminDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: EnableAdminDistribution
+    Properties:
+      DistributionConfig:
+        Aliases: !If
+          - EnableAdminDomain
+          - - !Ref AdminDomainName
+          - - !Ref AWS::NoValue
+        HttpVersion: http2
+        Origins:
+        - DomainName: !Ref DrupalBackendEndpoint
+          Id: dynamicOrigin
+          CustomOriginConfig:
+            HTTPSPort: !If
+              - EnableHTTPS
+              - 443
+              - 80
+            OriginProtocolPolicy: !If
+              - EnableHTTPS
+              - https-only
+              - http-only
+        Enabled: 'true'
+        Comment: !Sub "${AWS::StackName} - Admin distribution for Drupal content updates"
+        DefaultCacheBehavior:
+          TargetOriginId: dynamicOrigin
+          CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad'
+          OriginRequestPolicyId: '216adef6-5c7f-47e4-b989-5492eafa07d3'
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+              - PUT
+              - POST
+              - PATCH
+              - DELETE
+          Compress: 'false'
+        PriceClass: PriceClass_All
+        ViewerCertificate: !If
+          - EnableAdminDomain
+          - AcmCertificateArn: !Ref AdminDomainACMCertificate
+            MinimumProtocolVersion: 'TLSv1.2_2021'
+            SslSupportMethod: 'sni-only'
+          - CloudFrontDefaultCertificate: true
+        WebACLId: !GetAtt AdminWAFWebACL.Arn
+
+  BypassCacheFunction:
+    Type: AWS::CloudFront::Function
+    Condition: DisableAdminDistribution
+    Properties:
+      AutoPublish: true
+      Name: !Sub ${AWS::StackName}-BypassCacheFunction
+      FunctionConfig:
+        Comment: "Viewer Request function to bypass cache for logged in users.
+        Needed for content updates to be visible immediately."
+        Runtime: "cloudfront-js-1.0"
+      FunctionCode: !Sub
+        - |
+          var cookieName = "${DrupalCookieName}";
+          var randomString = "${RandomStr}";
+
+          function handler(event) {
+            var request = event.request;
+            if(loggedInUser(request)){
+              request.querystring[randomString] = {value: "ran-"+Math.random()};
+            }
+            else{
+              console.log("not logged in user")
+            }
+            return request;
+          }
+
+          function loggedInUser(request) {
+              return Object.keys(request.cookies).some(key => key.startsWith(cookieName));
+              # return request.cookies[cookieName]?true:false;
+          }
+        - DrupalCookieName: !Ref DrupalCookieName
+          RandomStr: !Join ["-",[!Ref DrupalCookieName,'randomstr']]
+
+  DomainNameARecord:
+    Type: AWS::Route53::RecordSet
+    Condition: EnableDomain
+    Properties:
+      Name: !Ref DomainName
+      HostedZoneId: !Ref HostedZoneId
+      AliasTarget:
+        DNSName: !GetAtt ViewerDistribution.DomainName
+        # hosted zone Id to be used for Alias Records pointing to CloudFront.
+        # more information https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-route53-aliastarget-1.html#cfn-route53-aliastarget-hostedzoneid
+        HostedZoneId: 'Z2FDTNDATAQYW2'
+      Comment: !Sub ${AWS::StackName}-Drupal viewer distribution 'A' recordset
+      Type: 'A'
+
+  DomainNameAAAARecord:
+    Type: AWS::Route53::RecordSet
+    Condition: EnableDomain
+    Properties:
+      Name: !Ref DomainName
+      HostedZoneId: !Ref HostedZoneId
+      AliasTarget:
+        DNSName: !GetAtt ViewerDistribution.DomainName
+        # hosted zone Id to be used for Alias Records pointing to CloudFront.
+        # more information https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-route53-aliastarget-1.html#cfn-route53-aliastarget-hostedzoneid
+        HostedZoneId: 'Z2FDTNDATAQYW2'
+      Comment: !Sub ${AWS::StackName}-Drupal viewer distribution 'AAAA' recordset
+      Type: 'AAAA'
+
+  AdminDomainNameARecord:
+    Type: AWS::Route53::RecordSet
+    Condition: EnableRecordSet
+    Properties:
+      Name: !Ref AdminDomainName
+      HostedZoneId: !Ref HostedZoneId
+      AliasTarget:
+        DNSName: !GetAtt AdminDistribution.DomainName
+        # hosted zone Id to be used for Alias Records pointing to CloudFront.
+        # more information https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-route53-aliastarget-1.html#cfn-route53-aliastarget-hostedzoneid
+        HostedZoneId: 'Z2FDTNDATAQYW2'
+      Comment: !Sub ${AWS::StackName}-Drupal admin distribution 'A' recordset
+      Type: 'A'
+
+  AdminDomainNameAAAARecord:
+    Type: AWS::Route53::RecordSet
+    Condition: EnableRecordSet
+    Properties:
+      Name: !Ref AdminDomainName
+      HostedZoneId: !Ref HostedZoneId
+      AliasTarget:
+        DNSName: !GetAtt AdminDistribution.DomainName
+        # hosted zone Id to be used for Alias Records pointing to CloudFront.
+        # more information https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-route53-aliastarget-1.html#cfn-route53-aliastarget-hostedzoneid
+        HostedZoneId: 'Z2FDTNDATAQYW2'
+      Comment: !Sub ${AWS::StackName}-Drupal admin distribution 'AAAA' recordset
+      Type: 'AAAA'
+
+Outputs:
+  ViewerDistributionURL:
+    Value: !If
+      - EnableDomain
+      - !Sub https://${DomainName}/
+      - !Sub https://${ViewerDistribution.DomainName}/
+  AdminDistributionURL:
+    Value: !If
+      - EnableAdminDistribution
+      - !If
+          - EnableAdminDomain
+          - !Sub https://${AdminDomainName}/
+          - !Sub https://${AdminDistribution.DomainName}/
+      - '-'
