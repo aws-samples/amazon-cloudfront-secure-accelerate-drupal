@@ -11,7 +11,7 @@ Once you have the Drupal backend available, clone the GitHub repo here (https://
 ### Walk through of the CloudFormation template input parameters:
 
 The CloudFormation template defines the AWS resources and provides parameters to configure your setup matching either of the scenarios discussed earlier. When you start the deployment, enter a ‘Stack Name’ and then you will be presented with a set of configuration parameters. Let’s understand what they imply.
-![]((images/input-params.png)
+![](images/input-params.png)
 
 *Drupal Backend Configuration*
 
@@ -37,21 +37,20 @@ If *‘Enable Admin configuration’* is set to *‘yes’* (caters to scenario 
 
 The CloudFront distribution with description *‘StackName-viewer distribution for Drupal content delivery’* is used to serve traffic to your end viewers. This distribution has a single default behavior pointing to your *‘Drupal backend Endpoint’* as shown below.
 
-![]((images/viewer_distribution_behavior.jpg)
+![](images/viewer_distribution_behavior.jpg)
 
 This cache behavior is defined to optimize for caching content (using the ‘Managed-CachingOptimized (https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-cache-policies.html#managed-cache-policies-list)’ cache policy’).  Depending on the ‘Cache-Control’ headers sent from origin the content is cached with a minimum time to live (TTL) of 1 sec, a maximum TTL of 31536000 sec (365 days) and a default TTL of 86400 sec (1 day) when no cache-control header is specified. To learn more on how CloudFront honors cache-control headers refer https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/Expiration.html
 
 The associated AWS WAF configuration (https://console.aws.amazon.com/wafv2/homev2/web-acls?region=global) with name *‘StackName-ViewerWAFWebACL’* blocks all ‘admin’ access URLs using a regex match rule. A regular expression rule set with name *‘StackName-DrupalAdminRegex’* is created and it defines the path patterns for ‘admin’ URLs as shown. Update this regex rule group to include additional URL patterns that need to be restricted.
 
-
+```
 ^(\/user\/|\/admin\/)
 ^(\/node\/|\/batch|\/core\/)
-
-
+```
 
 A second CloudFront distribution with description *‘StackName-Admin distribution for Drupal content updates’* is used by admin users to manage content updates. This distribution has a single default behavior whose origin maps to the ‘Drupal backend Endpoint’ and is set to not cache content (using the ‘Managed-CacheDisabled (https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-cache-policies.html#managed-cache-policies-list)’ cache policy).
 
-![]((images/admin_distribution_behavior.jpg)
+![](images/admin_distribution_behavior.jpg)
 
 The configuration passes all viewer headers, query strings and cookies (using the ‘Managed-AllViewer (https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-origin-request-policies.html#managed-origin-request-policies-list)’ origin request policy) so that content updates are reflected immediately to admin users.
 
