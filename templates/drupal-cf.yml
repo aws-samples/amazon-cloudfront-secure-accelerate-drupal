@@ -348,8 +348,7 @@ Resources:
           QueryStringsConfig:
             QueryStringBehavior: whitelist
             QueryStrings:
-              - !Join ["-",[!Ref DrupalCookieName, 'randomstr']]
-
+              - !Join ["-",[!Ref DrupalCookieName, !Select [2, !Split ['/', !Ref AWS::StackId]]]]
 
   ViewerDistribution:
     Type: AWS::CloudFront::Distribution
@@ -557,7 +556,7 @@ Resources:
               # return request.cookies[cookieName]?true:false;
           }
         - DrupalCookieName: !Ref DrupalCookieName
-          RandomStr: !Join ["-",[!Ref DrupalCookieName,'randomstr']]
+          RandomStr: !Join ["-",[!Ref DrupalCookieName,!Select [2, !Split ['/', !Ref AWS::StackId]]]]
 
   DomainNameARecord:
     Type: AWS::Route53::RecordSet
