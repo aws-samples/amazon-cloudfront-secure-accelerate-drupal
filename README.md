@@ -1,10 +1,15 @@
 # Secure and Accelerate Drupal CMS with Amazon CloudFront
 
 Best practices on setting up Drupal with Amazon CloudFront, AWS WAF, CloudFront Functions to serve both anonymous viewers and admin users.
+Follow the associated blog here (https://aws.amazon.com/blogs/networking-and-content-delivery/secure-and-accelerate-drupal-cms-with-amazon-cloudfront-aws-waf-and-edge-functions/)
 
 ## Deployment
 
-Once you have the Drupal backend available, clone the GitHub repo here (https://github.com/aws-samples/amazon-cloudfront-secure-accelerate-drupal) and deploy the CloudFormation template available under ‘templates/drupal-cf.yml’. Note the deployment needs to be in *‘us-east-1*’ AWS region.
+Once you have the Drupal backend available, clone this repository and deploy the CloudFormation template available under ‘templates/drupal-cf.yml’. Note the deployment needs to be in *‘us-east-1*’ AWS Region.
+
+```
+git clone https://github.com/aws-samples/amazon-cloudfront-secure-accelerate-drupal.git
+```
 
 ### Walk through of the CloudFormation template input parameters:
 
