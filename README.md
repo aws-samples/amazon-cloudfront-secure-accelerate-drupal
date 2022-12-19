@@ -4,8 +4,6 @@ Best practices on setting up Drupal with Amazon CloudFront, AWS WAF, CloudFront 
 
 ## Deployment
 
-Before getting started, you will need a Drupal powered backend listening on a publicly available endpoint. If you don’t have a setup then you can use the following AWS Quick Start (https://aws.amazon.com/quickstart/architecture/drupal/) solution which follows the best practices in setting up the Drupal. (Note this solution optionally allows you to configure CloudFront to serve viewers).
-
 Once you have the Drupal backend available, clone the GitHub repo here (https://github.com/aws-samples/amazon-cloudfront-secure-accelerate-drupal) and deploy the CloudFormation template available under ‘templates/drupal-cf.yml’. Note the deployment needs to be in *‘us-east-1*’ AWS region.
 
 ### Walk through of the CloudFormation template input parameters:
